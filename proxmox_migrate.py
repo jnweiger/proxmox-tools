@@ -104,17 +104,17 @@ class ProxmoxAPIext(ProxmoxAPI):
             id = int(res['sid'].split(':')[1])
             resources[id] = res
 
-            # Find matching rule by checking if this resource ID is in any rule's resources
-            res_group = None
-            for rule_name, rule_data in groups.items():
-                if f"{res['type']}:{id}" in rule_data.get('resources', '').split(','):
-                    res_group = rule_data
-                    break
-
-            if res_group:
-                resources[id]['group'] = res_group
+            # BACKWARD COMPATIBLE: Try old 'group' field first (migration artifacts)
+            if 'group' in res and res['group'] in groups:
+                resources[id]['group'] = groups[res['group']]
             else:
-                resources[id]['group'] = {'nodelist': dstnodes}
+                # NEW: Find matching rule by checking if this resource ID is in any rule's resources
+                res_group = None
+                for rule_name, rule_data in groups.items():
+                    if f"{res['type']}:{id}" in (rule_data.get('resources', '') or '').split(','):
+                        res_group = rule_data
+                        break
+                resources[id]['group'] = res_group or {'nodelist': dstnodes}
 
         if args.debug:
             print('*** get_ha_resources()')
