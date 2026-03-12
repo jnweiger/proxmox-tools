@@ -69,52 +69,70 @@ class ProxmoxAPIext(ProxmoxAPI):
 
 
     def get_groups(self):
+        """
+        Build a group-like dict from PVE9 HA node-affinity rules.
+
+        Returns a dict keyed by rule name, each value containing:
+          - nodelist: list of node names (priorities stripped)
+          - restricted: bool (True if rule is strict)
+          - resources: set of integer VM/CT IDs covered by this rule
+        Falls back to the legacy /cluster/ha/groups endpoint for PVE8.
+        """
         groups = {}
-        rules_list = self.cluster.ha.rules.get()
-        for rule_summary in rules_list:
-            rule_name = rule_summary['rule']
-            # Fetch full rule details (only node-affinity rules have nodes)
-            rule_details = self.cluster.ha.rules(rule_name).get()
-            if rule_details.get('type') == 'node-affinity':
-                groups[rule_name] = rule_details
-                groups[rule_name]['nodelist'] = [x.split(':')[0] for x in rule_details['nodes'].split(',')]
+        try:
+            for rule in self.cluster.ha.rules.get():
+                if rule.get('type') != 'node-affinity':
+                    continue  # skip resource-affinity ...
+                rule_name = rule['rule']
+                detail = self.cluster.ha.rules(rule_name).get()
+                # Fetch full rule details (only node-affinity rules have nodes)
+                nodelist = [x.split(':')[0] for x in detail.get('nodes', '').split(',')
+                restricted = bool(detail.get('strict', 0))
+                res_ids = set()
+                for sid in detail.get('resources', '').split(','):
+                    sid = sid.strip()
+                    if ':' in sid:
+                        try:
+                            res_ids.add(int(sid.split(':')[1]))
+                        except ValueError:
+                            pass
+                groups[rule_name] = {
+                    'group': rule_name,
+                    'nodelist': nodelist,
+                    'restricted': restricted,
+                    'resources': res_ids,
+                }
+        except Exception:
+            # Fallback for PVE8 / legacy clusters still using /cluster/ha/groups
+            for group in self.cluster.ha.groups.get():
+                groups[group['group']] = group
+                groups[group['group']]['nodelist'] = [x.split(':')[0] for x in group['nodes'].split(',')]
         return groups
 
 
-    def get_ha_resources_8(self, dstnodes = []):
-        groups = self.get_groups()
-        resources = {}
-        for res in self.cluster.ha.resources.get():
-            id = int(res['sid'].split(':')[1])
-            resources[id] = res
-            if 'group' in res and res['group'] in groups:
-                resources[id]['group'] = groups[res['group']]
-            else:
-                resources[id]['group'] = {'nodelist': dstnodes}
-        if args.debug:
-            print('*** get_ha_resources()')
-            pprint(resources)
-        return resources
-
-
     def get_ha_resources(self, dstnodes=[]):
-        groups = self.get_groups()
+        # Build a vmid -> group lookup from PVE9 rules (which embed resource lists)
+        # or from legacy groups (where resources reference the group by name).
+        rules = self.get_groups()   # keyed by rule/group name
+
+        # Build a reverse map: vmid (int) -> rule/group dict
+        vmid_to_group = {}
+        for rule in rules.values():
+            for vmid in rule.get('resources', set()):
+                vmid_to_group[vmid] = rule
+
         resources = {}
         for res in self.cluster.ha.resources.get():
             id = int(res['sid'].split(':')[1])
             resources[id] = res
 
-            # BACKWARD COMPATIBLE: Try old 'group' field first (migration artifacts)
-            if 'group' in res and res['group'] in groups:
-                resources[id]['group'] = groups[res['group']]
-            else:
-                # NEW: Find matching rule by checking if this resource ID is in any rule's resources
-                res_group = None
-                for rule_name, rule_data in groups.items():
-                    if f"{res['type']}:{id}" in (rule_data.get('resources', '') or '').split(','):
-                        res_group = rule_data
-                        break
-                resources[id]['group'] = res_group or {'nodelist': dstnodes}
+            if id in vmid_to_group:
+                resources[id]['group'] = vmid_to_group[id]
+            elif 'group' in res and res['group'] in rules:
+                # PVE8 fallback: resource still has a 'group' field
+                resources[id]['group'] = rules[res['group']]
+             else:
+                 resources[id]['group'] = {'nodelist': dstnodes}
 
         if args.debug:
             print('*** get_ha_resources()')
