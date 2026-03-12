@@ -86,7 +86,7 @@ class ProxmoxAPIext(ProxmoxAPI):
                 rule_name = rule['rule']
                 detail = self.cluster.ha.rules(rule_name).get()
                 # Fetch full rule details (only node-affinity rules have nodes)
-                nodelist = [x.split(':')[0] for x in detail.get('nodes', '').split(',')
+                nodelist = [x.split(':')[0] for x in detail.get('nodes', '').split(',')]
                 restricted = bool(detail.get('strict', 0))
                 res_ids = set()
                 for sid in detail.get('resources', '').split(','):
@@ -131,8 +131,8 @@ class ProxmoxAPIext(ProxmoxAPI):
             elif 'group' in res and res['group'] in rules:
                 # PVE8 fallback: resource still has a 'group' field
                 resources[id]['group'] = rules[res['group']]
-             else:
-                 resources[id]['group'] = {'nodelist': dstnodes}
+            else:
+                resources[id]['group'] = {'nodelist': dstnodes}
 
         if args.debug:
             print('*** get_ha_resources()')
