@@ -67,14 +67,21 @@ class ProxmoxAPIext(ProxmoxAPI):
         vm = list(filter(lambda x: x['vmid'] == vmid, self.cluster.resources.get(type='vm')))[0]
         return self.migrate_vm(vm, dest)
 
+
     def get_groups(self):
         groups = {}
-        for group in self.cluster.ha.groups.get():
-            groups[group['group']] = group
-            groups[group['group']]['nodelist'] = [x.split(':')[0] for x in group['nodes'].split(',')]
+        rules_list = self.cluster.ha.rules.get()
+        for rule_summary in rules_list:
+            rule_name = rule_summary['rule']
+            # Fetch full rule details (only node-affinity rules have nodes)
+            rule_details = self.cluster.ha.rules(rule_name).get()
+            if rule_details.get('type') == 'node-affinity':
+                groups[rule_name] = rule_details
+                groups[rule_name]['nodelist'] = [x.split(':')[0] for x in rule_details['nodes'].split(',')]
         return groups
 
-    def get_ha_resources(self, dstnodes = []):
+
+    def get_ha_resources_8(self, dstnodes = []):
         groups = self.get_groups()
         resources = {}
         for res in self.cluster.ha.resources.get():
@@ -88,6 +95,32 @@ class ProxmoxAPIext(ProxmoxAPI):
             print('*** get_ha_resources()')
             pprint(resources)
         return resources
+
+
+    def get_ha_resources(self, dstnodes=[]):
+        groups = self.get_groups()
+        resources = {}
+        for res in self.cluster.ha.resources.get():
+            id = int(res['sid'].split(':')[1])
+            resources[id] = res
+
+            # Find matching rule by checking if this resource ID is in any rule's resources
+            res_group = None
+            for rule_name, rule_data in groups.items():
+                if f"{res['type']}:{id}" in rule_data.get('resources', '').split(','):
+                    res_group = rule_data
+                    break
+
+            if res_group:
+                resources[id]['group'] = res_group
+            else:
+                resources[id]['group'] = {'nodelist': dstnodes}
+
+        if args.debug:
+            print('*** get_ha_resources()')
+            pprint(resources)
+        return resources
+
 
     def get_vms(self, filterfunc = lambda x: True):
         vms = {}
